@@ -8,20 +8,20 @@ const BB_API_KEY = process.env.BB_API_KEY || "";
 const BB_API = "https://api.browserbase.com/v1/sessions";
 const USE_BROWSERBASE = BB_API_KEY.length > 0;
 
-// ===== 国家+州随机池（仅保留 IP 库存充足的大国，避免小国回退导致归属地不匹配） =====
+// ===== 国家+州+时区+locale 配置池 =====
 const COUNTRY_POOL = [
-  { country: "US", states: ["CA", "NY", "TX", "FL", "WA", "IL", "MA", "OR", "GA", "NC", "VA", "MI", "PA", "OH", "NJ", "AZ", "CO", "MN", "WI", "MD"] },
-  { country: "GB", states: [] },
-  { country: "DE", states: [] },
-  { country: "FR", states: [] },
-  { country: "JP", states: [] },
-  { country: "CA", states: [] },
-  { country: "AU", states: [] },
+  { country: "US", states: ["CA", "NY", "TX", "FL", "WA", "IL", "MA", "OR", "GA", "NC", "VA", "MI", "PA", "OH", "NJ", "AZ", "CO", "MN", "WI", "MD"], timezone: "America/New_York", locale: "en-US" },
+  { country: "GB", states: [], timezone: "Europe/London", locale: "en-GB" },
+  { country: "DE", states: [], timezone: "Europe/Berlin", locale: "de-DE" },
+  { country: "FR", states: [], timezone: "Europe/Paris", locale: "fr-FR" },
+  { country: "JP", states: [], timezone: "Asia/Tokyo", locale: "ja-JP" },
+  { country: "CA", states: [], timezone: "America/Toronto", locale: "en-CA" },
+  { country: "AU", states: [], timezone: "Australia/Sydney", locale: "en-AU" },
 ];
 
 function pickRandomGeo() {
   const entry = COUNTRY_POOL[Math.floor(Math.random() * COUNTRY_POOL.length)];
-  const geo = { country: entry.country };
+  const geo = { country: entry.country, timezone: entry.timezone, locale: entry.locale };
   if (entry.states.length > 0 && Math.random() < 0.7) {
     geo.state = entry.states[Math.floor(Math.random() * entry.states.length)];
   }
@@ -65,8 +65,9 @@ async function bezierMove(page, endX, endY, log) {
 
 // ===== 创建 Browserbase Session =====
 async function createSession(geo) {
-  // 临时测试：不设 geolocation，用默认 US IP
-  const proxyConfig = true;
+  const proxyConfig = geo
+    ? [{ type: "browserbase", geolocation: { country: geo.country, state: geo.state, city: geo.city } }]
+    : true;
 
   const resp = await fetch(BB_API, {
     method: "POST",
@@ -228,6 +229,24 @@ async function runOnce(options) {
       await context.addInitScript(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
       );
+      // 设置时区和 locale 匹配 geolocation
+      if (geo.timezone) {
+        await context.addInitScript((tz) => {
+          const origDateTimeFormat = Intl.DateTimeFormat;
+          Intl.DateTimeFormat = function(...args) {
+            if (args[1]) args[1].timeZone = tz;
+            else args[1] = { timeZone: tz };
+            return new origDateTimeFormat(...args);
+          };
+          Intl.DateTimeFormat.prototype = origDateTimeFormat.prototype;
+        }, geo.timezone);
+      }
+      if (geo.locale) {
+        await context.addInitScript((lc) => {
+          Object.defineProperty(navigator, 'language', { get: () => lc });
+          Object.defineProperty(navigator, 'languages', { get: () => [lc] });
+        }, geo.locale);
+      }
     } else {
       log(`[${geoStr}] 本地浏览器模式（无 BB_API_KEY）`);
       browser = await chromium.launch({
