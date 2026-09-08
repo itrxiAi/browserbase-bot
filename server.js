@@ -41,7 +41,7 @@ async function schedulerLoop() {
 
     // 泊松分布间隔
     const interval = poissonInterval(state.avgIntervalSec);
-    const waitMs = Math.max(interval * 1000, 2000); // 最少 2 秒
+    const waitMs = Math.min(Math.max(interval * 1000, 2000), 60000); // 2-60 秒
     console.log(`[调度] 等待 ${Math.round(waitMs / 1000)}s 后启动下一个 (pending: ${state.pending})`);
     await sleep(waitMs);
 

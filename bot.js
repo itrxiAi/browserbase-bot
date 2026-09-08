@@ -7,7 +7,7 @@ const BB_API_KEY = process.env.BB_API_KEY || "";
 const BB_API = "https://api.browserbase.com/v1/sessions";
 const USE_BROWSERBASE = BB_API_KEY.length > 0;
 
-// ===== 国家+州随机池（主要发达国家） =====
+// ===== 国家+州随机池（仅保留 IP 库存充足的大国，避免小国回退导致归属地不匹配） =====
 const COUNTRY_POOL = [
   { country: "US", states: ["CA", "NY", "TX", "FL", "WA", "IL", "MA", "OR", "GA", "NC", "VA", "MI", "PA", "OH", "NJ", "AZ", "CO", "MN", "WI", "MD"] },
   { country: "GB", states: [] },
@@ -16,14 +16,6 @@ const COUNTRY_POOL = [
   { country: "JP", states: [] },
   { country: "CA", states: [] },
   { country: "AU", states: [] },
-  { country: "NL", states: [] },
-  { country: "SE", states: [] },
-  { country: "CH", states: [] },
-  { country: "IT", states: [] },
-  { country: "ES", states: [] },
-  { country: "SG", states: [] },
-  { country: "KR", states: [] },
-  { country: "NZ", states: [] },
 ];
 
 function pickRandomGeo() {
@@ -293,6 +285,19 @@ async function runOnce(options) {
 
     const pageTitle = await page.title();
     log(`[${geoStr}] 页面标题: ${pageTitle}`);
+
+    // 检测到 CAPTCHA 验证页，直接退出
+    if (/captcha/i.test(pageTitle)) {
+      log(`[${geoStr}] 命中 CAPTCHA 验证页，放弃本次访问`);
+      return {
+        success: false,
+        finalUrl: page.url(),
+        title: pageTitle,
+        duration: Math.round((Date.now() - startTime) / 1000),
+        geo: geoStr,
+        error: "CAPTCHA detected",
+      };
+    }
 
     const actionCount = randInt(5, 10);
     log(`[${geoStr}] 模拟 ${actionCount} 个行为`);
