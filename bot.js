@@ -65,9 +65,8 @@ async function bezierMove(page, endX, endY, log) {
 
 // ===== 创建 Browserbase Session =====
 async function createSession(geo) {
-  const proxyConfig = geo
-    ? [{ type: "browserbase", geolocation: { country: geo.country, state: geo.state, city: geo.city } }]
-    : true;
+  // 用默认 US 住宅 IP，不设 geolocation
+  const proxyConfig = true;
 
   const resp = await fetch(BB_API, {
     method: "POST",
