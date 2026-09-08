@@ -16,7 +16,7 @@ const state = {
   totalExecuted: 0,
   totalSuccess: 0,
   totalFail: 0,
-  targetUrl: "https://twinklerhk.en.alibaba.com/company_profile.html?spm=a2700.product_ggs_search.normal_offer.d_companyName.64f713a06OoxeY",
+  targetUrl: "https://szkeywords.en.alibaba.com/index.html?spm=a2700.shop_cp.88.15.35c33262tC2wGo",
   schedulerActive: false,
 };
 

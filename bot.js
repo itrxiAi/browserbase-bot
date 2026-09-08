@@ -1,5 +1,6 @@
 const { chromium } = require("playwright");
 const { path: cursorPath } = require("ghost-cursor");
+const { GhostCursor } = require("ghost-cursor");
 require("dotenv").config();
 
 // ===== 配置 =====
@@ -44,23 +45,28 @@ function randInt(min, max) {
 // 记录当前鼠标位置，模拟真实人类的曲线+加减速移动
 let currentMousePos = { x: 100, y: 100 };
 
-async function bezierMove(page, endX, endY) {
+async function bezierMove(page, endX, endY, log) {
   const start = { x: currentMousePos.x, y: currentMousePos.y };
   const end = { x: endX, y: endY };
-  // ghost-cursor 的 path 生成贝塞尔曲线轨迹点
-  const points = cursorPath(start, end, { moveSpeed: Math.random() * 0.5 + 0.5 });
-  for (const p of points) {
+  // 使用 useTimestamps 生成带时间戳的轨迹，模拟人类加减速
+  const points = cursorPath(start, end, { useTimestamps: true });
+  if (log) log(`  鼠标移动: (${Math.round(start.x)}, ${Math.round(start.y)}) → (${Math.round(endX)}, ${Math.round(endY)}) 共${points.length}步`);
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
     await page.mouse.move(p.x, p.y);
-    await sleep(rand(5, 15));
+    // 根据时间戳计算延迟，实现加减速
+    if (i < points.length - 1) {
+      const dt = points[i + 1].timestamp - p.timestamp;
+      await sleep(Math.max(1, dt));
+    }
   }
   currentMousePos = { x: endX, y: endY };
 }
 
 // ===== 创建 Browserbase Session =====
 async function createSession(geo) {
-  const proxyConfig = geo
-    ? [{ type: "browserbase", geolocation: geo }]
-    : true;
+  // 临时测试：不设 geolocation，用默认 US IP
+  const proxyConfig = true;
 
   const resp = await fetch(BB_API, {
     method: "POST",
@@ -133,62 +139,20 @@ async function humanMouseMove(page, log) {
 // ===== 模拟人类点击（导航菜单） =====
 async function humanClick(page, log) {
   const navLinks = await page.$$(".nav-link");
-  if (navLinks.length === 0) {
+  const visibleLinks = [];
+  for (const link of navLinks) {
+    if (await link.isVisible().catch(() => false)) {
+      const title = await link.$(".nav-title")
+        .then((el) => (el ? el.innerText() : ""))
+        .catch(() => "");
+      if (title) visibleLinks.push(link);
+    }
+  }
+  if (visibleLinks.length === 0) {
     log("  没有找到导航菜单");
     return false;
   }
-
-  const clickSubMenu = Math.random() < 0.4;
-
-  if (clickSubMenu) {
-    const parentItems = await page.$$(".nav-item");
-    const itemsWithMenu = [];
-    for (const item of parentItems) {
-      const menu = await item.$(".nav-menu").catch(() => null);
-      if (menu) itemsWithMenu.push(item);
-    }
-
-    if (itemsWithMenu.length === 0) {
-      return clickNavLink(page, navLinks, log);
-    }
-
-    const parent = itemsWithMenu[randInt(0, itemsWithMenu.length - 1)];
-    const parentLink = await parent.$(".nav-link");
-    const parentTitle = await parentLink
-      .$(".nav-title")
-      .then((el) => (el ? el.innerText() : "?"))
-      .catch(() => "?");
-
-    const parentBox = await parentLink.boundingBox();
-    if (!parentBox) return clickNavLink(page, navLinks, log);
-
-    await bezierMove(page, parentBox.x + parentBox.width / 2, parentBox.y + parentBox.height / 2);
-    await sleep(rand(400, 900));
-
-    const menuLinks = await parent.$$(".menu-link");
-    const visibleSubs = [];
-    for (const link of menuLinks) {
-      const visible = await link.isVisible().catch(() => false);
-      if (!visible) continue;
-      const href = await link.getAttribute("href").catch(() => "");
-      if (!href) continue;
-      visibleSubs.push(link);
-    }
-
-    if (visibleSubs.length === 0) {
-      log(`  下拉未展开，改点父项: ${parentTitle}`);
-      return doHumanClickEl(page, parentLink, log);
-    }
-
-    const sub = visibleSubs[randInt(0, visibleSubs.length - 1)];
-    const subTitle = await sub.getAttribute("title").catch(() => "?");
-    log(`  点击下拉子项: ${parentTitle} → ${subTitle}`);
-    const ok = await doHumanClickEl(page, sub, log);
-    await sleep(rand(2000, 4000));
-    return ok;
-  } else {
-    return clickNavLink(page, navLinks, log);
-  }
+  return clickNavLink(page, visibleLinks, log);
 }
 
 async function clickNavLink(page, navLinks, log) {
@@ -215,13 +179,11 @@ async function doHumanClickEl(page, el, log) {
   const clickX = box.x + offsetX;
   const clickY = box.y + offsetY;
 
-  // 先贝塞尔移动到目标附近（模拟 overshoot）
+  // 先移到目标附近（overshoot），再微调到目标
   const nearX = clickX + rand(-50, 50);
   const nearY = clickY + rand(-50, 50);
   await bezierMove(page, nearX, nearY);
   await sleep(rand(100, 400));
-
-  // 再移到目标
   await bezierMove(page, clickX, clickY);
   await sleep(rand(50, 200));
 
@@ -262,6 +224,10 @@ async function runOnce(options) {
       log(`[${geoStr}] 连接 CDP...`);
       browser = await chromium.connectOverCDP(session.connectUrl);
       context = browser.contexts()[0];
+      // 注入反自动化检测脚本
+      await context.addInitScript(
+        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+      );
     } else {
       log(`[${geoStr}] 本地浏览器模式（无 BB_API_KEY）`);
       browser = await chromium.launch({
@@ -281,9 +247,14 @@ async function runOnce(options) {
 
     log(`[${geoStr}] 访问页面...`);
     await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await sleep(rand(3000, 6000));
-
+    log(`[${geoStr}] domcontentloaded 完成`);
+    await sleep(rand(2000, 4000));
+    log(`[${geoStr}] sleep 完成，获取标题...`);
+    const t1 = Date.now();
+    const urlBefore = page.url();
+    log(`[${geoStr}] 当前 URL: ${urlBefore}`);
     const pageTitle = await page.title();
+    log(`[${geoStr}] page.title() 耗时: ${Date.now() - t1}ms, URL: ${page.url()}`);
     log(`[${geoStr}] 页面标题: ${pageTitle}`);
 
     // 检测到 CAPTCHA 验证页，直接退出
@@ -302,22 +273,13 @@ async function runOnce(options) {
     const actionCount = randInt(5, 10);
     log(`[${geoStr}] 模拟 ${actionCount} 个行为`);
 
-    for (let i = 0; i < actionCount; i++) {
-      const action = randInt(0, 3);
-      switch (action) {
-        case 0:
-          await humanScroll(page, log);
-          break;
-        case 1:
-          await humanMouseMove(page, log);
-          break;
-        case 2:
-          await humanClick(page, log);
-          break;
-        case 3:
-          await humanRead(page, log);
-          break;
-      }
+    // 先点击导航
+    await humanClick(page, log);
+    await sleep(rand(1000, 3000));
+
+    // 之后滚动
+    for (let i = 1; i < actionCount; i++) {
+      await humanScroll(page, log);
       await sleep(rand(1000, 3000));
     }
 
