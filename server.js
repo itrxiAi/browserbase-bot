@@ -1,7 +1,7 @@
 const http = require("http");
 const { runOnce, pickRandomGeo, USE_BROWSERBASE } = require("./bot");
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3100;
 
 // ===== 全局状态：流量生成器 =====
 // pending: 待执行数量; running: 当前并发数; maxConcurrent: 最大并发
