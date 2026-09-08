@@ -1,5 +1,6 @@
 const { chromium } = require("playwright");
 const { path: cursorPath } = require("ghost-cursor");
+require("dotenv").config();
 
 // ===== 配置 =====
 const BB_API_KEY = process.env.BB_API_KEY || "";

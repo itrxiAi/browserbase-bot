@@ -1,4 +1,5 @@
 const http = require("http");
+require("dotenv").config();
 const { runOnce, pickRandomGeo, USE_BROWSERBASE } = require("./bot");
 
 const PORT = process.env.PORT || 3100;
