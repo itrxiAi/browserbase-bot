@@ -11,7 +11,7 @@ const state = {
   pending: 0,
   running: 0,
   maxConcurrent: 2,
-  avgIntervalSec: 30, // 平均间隔，前端可调
+  avgIntervalSec: 10, // 平均间隔，前端可调
   results: [], // 最近的结果（保留最新 100 条）
   totalExecuted: 0,
   totalSuccess: 0,
