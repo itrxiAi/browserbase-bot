@@ -1,0 +1,351 @@
+const { chromium } = require("playwright");
+const { path: cursorPath } = require("ghost-cursor");
+
+// ===== 配置 =====
+const BB_API_KEY = process.env.BB_API_KEY || "";
+const BB_API = "https://api.browserbase.com/v1/sessions";
+const USE_BROWSERBASE = BB_API_KEY.length > 0;
+
+// ===== 国家+州随机池（主要发达国家） =====
+const COUNTRY_POOL = [
+  { country: "US", states: ["CA", "NY", "TX", "FL", "WA", "IL", "MA", "OR", "GA", "NC", "VA", "MI", "PA", "OH", "NJ", "AZ", "CO", "MN", "WI", "MD"] },
+  { country: "GB", states: [] },
+  { country: "DE", states: [] },
+  { country: "FR", states: [] },
+  { country: "JP", states: [] },
+  { country: "CA", states: [] },
+  { country: "AU", states: [] },
+  { country: "NL", states: [] },
+  { country: "SE", states: [] },
+  { country: "CH", states: [] },
+  { country: "IT", states: [] },
+  { country: "ES", states: [] },
+  { country: "SG", states: [] },
+  { country: "KR", states: [] },
+  { country: "NZ", states: [] },
+];
+
+function pickRandomGeo() {
+  const entry = COUNTRY_POOL[Math.floor(Math.random() * COUNTRY_POOL.length)];
+  const geo = { country: entry.country };
+  if (entry.states.length > 0 && Math.random() < 0.7) {
+    geo.state = entry.states[Math.floor(Math.random() * entry.states.length)];
+  }
+  return geo;
+}
+
+// ===== 工具函数 =====
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function rand(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+function randInt(min, max) {
+  return Math.floor(rand(min, max + 1));
+}
+
+// ===== 贝塞尔曲线鼠标移动（基于 ghost-cursor 的 path 生成轨迹） =====
+// 记录当前鼠标位置，模拟真实人类的曲线+加减速移动
+let currentMousePos = { x: 100, y: 100 };
+
+async function bezierMove(page, endX, endY) {
+  const start = { x: currentMousePos.x, y: currentMousePos.y };
+  const end = { x: endX, y: endY };
+  // ghost-cursor 的 path 生成贝塞尔曲线轨迹点
+  const points = cursorPath(start, end, { moveSpeed: Math.random() * 0.5 + 0.5 });
+  for (const p of points) {
+    await page.mouse.move(p.x, p.y);
+    await sleep(rand(5, 15));
+  }
+  currentMousePos = { x: endX, y: endY };
+}
+
+// ===== 创建 Browserbase Session =====
+async function createSession(geo) {
+  const proxyConfig = geo
+    ? [{ type: "browserbase", geolocation: geo }]
+    : true;
+
+  const resp = await fetch(BB_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-bb-api-key": BB_API_KEY,
+    },
+    body: JSON.stringify({
+      proxies: proxyConfig,
+      browserSettings: {
+        verified: true,
+        solveCaptchas: true,
+        blockAds: true,
+      },
+    }),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`创建 Session 失败: ${resp.status} ${await resp.text()}`);
+  }
+
+  return await resp.json();
+}
+
+// ===== 关闭 Session =====
+async function closeSession(sessionId) {
+  try {
+    await fetch(`${BB_API}/${sessionId}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-bb-api-key": BB_API_KEY,
+      },
+      body: JSON.stringify({ status: "REQUEST_RELEASE" }),
+    });
+  } catch (e) {
+    // 忽略
+  }
+}
+
+// ===== 模拟人类滚动 =====
+async function humanScroll(page, log) {
+  const scrollTimes = randInt(2, 5);
+  log(`  滚动 ${scrollTimes} 次`);
+
+  for (let i = 0; i < scrollTimes; i++) {
+    const direction = Math.random() > 0.2 ? 1 : -1;
+    const distance = randInt(100, 500) * direction;
+    const steps = randInt(3, 8);
+
+    await page.mouse.wheel(0, distance / steps);
+    for (let s = 0; s < steps; s++) {
+      await page.mouse.wheel(0, distance / steps);
+      await sleep(rand(50, 200));
+    }
+    await sleep(rand(500, 2000));
+  }
+}
+
+// ===== 模拟人类鼠标移动（贝塞尔曲线） =====
+async function humanMouseMove(page, log) {
+  const moveTimes = randInt(2, 5);
+  for (let i = 0; i < moveTimes; i++) {
+    const x = randInt(100, 1200);
+    const y = randInt(100, 800);
+    await bezierMove(page, x, y);
+    await sleep(rand(200, 800));
+  }
+}
+
+// ===== 模拟人类点击（导航菜单） =====
+async function humanClick(page, log) {
+  const navLinks = await page.$$(".nav-link");
+  if (navLinks.length === 0) {
+    log("  没有找到导航菜单");
+    return false;
+  }
+
+  const clickSubMenu = Math.random() < 0.4;
+
+  if (clickSubMenu) {
+    const parentItems = await page.$$(".nav-item");
+    const itemsWithMenu = [];
+    for (const item of parentItems) {
+      const menu = await item.$(".nav-menu").catch(() => null);
+      if (menu) itemsWithMenu.push(item);
+    }
+
+    if (itemsWithMenu.length === 0) {
+      return clickNavLink(page, navLinks, log);
+    }
+
+    const parent = itemsWithMenu[randInt(0, itemsWithMenu.length - 1)];
+    const parentLink = await parent.$(".nav-link");
+    const parentTitle = await parentLink
+      .$(".nav-title")
+      .then((el) => (el ? el.innerText() : "?"))
+      .catch(() => "?");
+
+    const parentBox = await parentLink.boundingBox();
+    if (!parentBox) return clickNavLink(page, navLinks, log);
+
+    await bezierMove(page, parentBox.x + parentBox.width / 2, parentBox.y + parentBox.height / 2);
+    await sleep(rand(400, 900));
+
+    const menuLinks = await parent.$$(".menu-link");
+    const visibleSubs = [];
+    for (const link of menuLinks) {
+      const visible = await link.isVisible().catch(() => false);
+      if (!visible) continue;
+      const href = await link.getAttribute("href").catch(() => "");
+      if (!href) continue;
+      visibleSubs.push(link);
+    }
+
+    if (visibleSubs.length === 0) {
+      log(`  下拉未展开，改点父项: ${parentTitle}`);
+      return doHumanClickEl(page, parentLink, log);
+    }
+
+    const sub = visibleSubs[randInt(0, visibleSubs.length - 1)];
+    const subTitle = await sub.getAttribute("title").catch(() => "?");
+    log(`  点击下拉子项: ${parentTitle} → ${subTitle}`);
+    const ok = await doHumanClickEl(page, sub, log);
+    await sleep(rand(2000, 4000));
+    return ok;
+  } else {
+    return clickNavLink(page, navLinks, log);
+  }
+}
+
+async function clickNavLink(page, navLinks, log) {
+  const link = navLinks[randInt(0, navLinks.length - 1)];
+  const title = await link
+    .$(".nav-title")
+    .then((el) => (el ? el.innerText() : "?"))
+    .catch(() => "?");
+  log(`  点击主导航: ${title}`);
+  const ok = await doHumanClickEl(page, link, log);
+  await sleep(rand(2000, 4000));
+  return ok;
+}
+
+async function doHumanClickEl(page, el, log) {
+  const box = await el.boundingBox();
+  if (!box || box.width < 5 || box.height < 5) {
+    log(`  元素太小或无位置`);
+    return false;
+  }
+
+  const offsetX = rand(box.width * 0.2, box.width * 0.8);
+  const offsetY = rand(box.height * 0.2, box.height * 0.8);
+  const clickX = box.x + offsetX;
+  const clickY = box.y + offsetY;
+
+  // 先贝塞尔移动到目标附近（模拟 overshoot）
+  const nearX = clickX + rand(-50, 50);
+  const nearY = clickY + rand(-50, 50);
+  await bezierMove(page, nearX, nearY);
+  await sleep(rand(100, 400));
+
+  // 再移到目标
+  await bezierMove(page, clickX, clickY);
+  await sleep(rand(50, 200));
+
+  // 点击
+  await page.mouse.click(clickX, clickY);
+  log(`  点击坐标: (${Math.round(clickX)}, ${Math.round(clickY)})`);
+  return true;
+}
+
+// ===== 模拟人类阅读 =====
+async function humanRead(page, log) {
+  const readTime = rand(2000, 6000);
+  log(`  阅读停留 ${Math.round(readTime / 1000)} 秒`);
+  await sleep(readTime);
+}
+
+// ===== 单次访问 =====
+// options: { targetUrl, geo, onLog }
+// 返回: { success, finalUrl, title, duration, error, geo }
+async function runOnce(options) {
+  const { targetUrl, geo, onLog } = options;
+  const log = (msg) => {
+    if (onLog) onLog(msg);
+  };
+
+  let session = null;
+  let browser = null;
+  let context = null;
+  const startTime = Date.now();
+  const geoStr = geo.state ? `${geo.country}/${geo.state}` : geo.country;
+
+  log(`[${geoStr}] 开始访问: ${targetUrl}`);
+
+  try {
+    if (USE_BROWSERBASE) {
+      log(`[${geoStr}] 创建 Browserbase Session...`);
+      session = await createSession(geo);
+      log(`[${geoStr}] 连接 CDP...`);
+      browser = await chromium.connectOverCDP(session.connectUrl);
+      context = browser.contexts()[0];
+    } else {
+      log(`[${geoStr}] 本地浏览器模式（无 BB_API_KEY）`);
+      browser = await chromium.launch({
+        headless: false,
+        args: ["--disable-blink-features=AutomationControlled"],
+      });
+      context = await browser.newContext({
+        viewport: { width: 1920, height: 1080 },
+        locale: "en-US",
+      });
+      await context.addInitScript(
+        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+      );
+    }
+
+    const page = await context.newPage();
+
+    log(`[${geoStr}] 访问页面...`);
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await sleep(rand(3000, 6000));
+
+    const pageTitle = await page.title();
+    log(`[${geoStr}] 页面标题: ${pageTitle}`);
+
+    const actionCount = randInt(5, 10);
+    log(`[${geoStr}] 模拟 ${actionCount} 个行为`);
+
+    for (let i = 0; i < actionCount; i++) {
+      const action = randInt(0, 3);
+      switch (action) {
+        case 0:
+          await humanScroll(page, log);
+          break;
+        case 1:
+          await humanMouseMove(page, log);
+          break;
+        case 2:
+          await humanClick(page, log);
+          break;
+        case 3:
+          await humanRead(page, log);
+          break;
+      }
+      await sleep(rand(1000, 3000));
+    }
+
+    log(`[${geoStr}] 滚动到底部`);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await sleep(rand(2000, 4000));
+
+    const finalTitle = await page.title();
+    const finalUrl = page.url();
+    log(`[${geoStr}] 完成: ${finalTitle}`);
+
+    return {
+      success: true,
+      finalUrl,
+      title: finalTitle,
+      duration: Math.round((Date.now() - startTime) / 1000),
+      geo: geoStr,
+      error: null,
+    };
+  } catch (err) {
+    log(`[${geoStr}] 出错: ${err.message}`);
+    return {
+      success: false,
+      finalUrl: null,
+      title: null,
+      duration: Math.round((Date.now() - startTime) / 1000),
+      geo: geoStr,
+      error: err.message,
+    };
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    if (session) await closeSession(session.id);
+  }
+}
+
+module.exports = { runOnce, pickRandomGeo, USE_BROWSERBASE };
