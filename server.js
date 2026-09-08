@@ -16,9 +16,11 @@ const state = {
   totalExecuted: 0,
   totalSuccess: 0,
   totalFail: 0,
-  targetUrl: "https://szkeywords.en.alibaba.com/index.html?spm=a2700.shop_cp.88.15.35c33262tC2wGo",
+  targetUrl: "https://cnhzbingxing.en.alibaba.com/company_profile.html",
   schedulerActive: false,
 };
+
+//https://szkeywords.en.alibaba.com/index.html?spm=a2700.shop_cp.88.15.35c33262tC2wGo
 
 // ===== 泊松分布：指数分布间隔 =====
 // 间隔 = -ln(U) * mean，U 为 (0,1) 均匀随机数
