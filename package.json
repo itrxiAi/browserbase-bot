@@ -1,15 +1,15 @@
 {
   "name": "browserbase-bot",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
-  "description": "",
+  "description": "Browserbase 流量生成器 - 泊松分布模拟自然流量",
   "dependencies": {
     "ghost-cursor": "^1.4.2",
     "playwright": "^1.63.0"
