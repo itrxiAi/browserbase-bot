@@ -79,7 +79,6 @@ async function createSession(geo) {
     body: JSON.stringify({
       proxies: proxyConfig,
       browserSettings: {
-        verified: true,
         solveCaptchas: true,
         blockAds: true,
       },
