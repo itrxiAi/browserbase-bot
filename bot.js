@@ -15,14 +15,13 @@ function sleep(ms) {
 // ===== Apify Web Scraper =====
 const PAGE_FUNCTION = `async function pageFunction(context) {
   const title = document.title;
-  const html = document.documentElement.outerHTML;
-  const hasCaptcha = /baxia-dialog/.test(html) || /action=captcha/.test(html);
+  const hasCaptcha = /captcha/i.test(title);
   const imageCount = document.images.length;
   return {
     url: context.request.url,
     title: title,
     hasCaptcha: hasCaptcha,
-    htmlLength: html.length,
+    htmlLength: document.documentElement.outerHTML.length,
     imageCount: imageCount
   };
 }`;

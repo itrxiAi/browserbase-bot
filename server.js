@@ -16,75 +16,118 @@ const state = {
 
 let groupIdCounter = 0;
 
+// ===== 全局并发调度器（最多 2 并发）=====
+const scheduler = {
+  running: 0,
+  queue: [],  // [{ group, index, scheduledTime, targetUrl, execute }]
+};
+
+function trySchedule() {
+  const now = Date.now();
+  // 启动所有已到时间且并发未满的任务
+  while (scheduler.running < MAX_CONCURRENT && scheduler.queue.length > 0) {
+    // 找到最早可执行的任务
+    const next = scheduler.queue[0];
+    if (next.scheduledTime > now) break;  // 还没到时间
+
+    scheduler.queue.shift();
+    scheduler.running++;
+
+    const { group, index, targetUrl } = next;
+    console.log(`[组${group.id} #${index + 1}] 开始访问`);
+
+    runOnce({
+      targetUrl,
+      onLog: (msg) => console.log(`[组${group.id} #${index + 1}] ${msg}`),
+    }).then((result) => {
+      group.results[index] = result;
+      group.total++;
+      state.totalExecuted++;
+      if (result.success) {
+        group.success++;
+        state.totalSuccess++;
+      } else {
+        group.fail++;
+        state.totalFail++;
+      }
+      scheduler.running--;
+
+      // 检查该组是否完成
+      if (group.total >= group.count) {
+        group.status = "done";
+        console.log(`[组${group.id}] 完成: 成功 ${group.success}, 失败 ${group.fail}`);
+      }
+
+      trySchedule();
+    });
+  }
+
+  // 如果队列还有任务，设置定时器等下一个
+  if (scheduler.queue.length > 0 && scheduler.running < MAX_CONCURRENT) {
+    const next = scheduler.queue[0];
+    const waitMs = next.scheduledTime - Date.now();
+    if (waitMs > 0) {
+      setTimeout(trySchedule, waitMs);
+    }
+  }
+}
+
 // ===== 调度一组访问 =====
-async function runGroup(groupId, targetUrl, durationMin, count) {
+function runGroup(groupId, targetUrl, startMs, endMs, count) {
   const group = state.groups.find(g => g.id === groupId);
   if (!group) return;
 
   const log = (msg) => console.log(`[组${groupId}] ${msg}`);
-  const durationMs = durationMin * 60 * 1000;
-  const startTime = Date.now();
+  const durationMs = endMs - startMs;
 
-  // 在 durationMs 内随机分布 count 次访问
+  // 在 startMs ~ endMs 内随机分布 count 次访问
   const times = [];
   for (let i = 0; i < count; i++) {
     times.push(Math.random() * durationMs);
   }
   times.sort((a, b) => a - b);
 
-  log(`开始: ${count} 次访问, 时间范围 ${durationMin} 分钟, 最多 ${MAX_CONCURRENT} 并发`);
+  log(`开始: ${count} 次访问, 时间范围 ${new Date(startMs).toLocaleTimeString()} ~ ${new Date(endMs).toLocaleTimeString()}, 全局最多 ${MAX_CONCURRENT} 并发`);
 
-  // 用 Promise 管理并发
-  let running = 0;
-  let nextIndex = 0;
-  const results = new Array(count);
+  // 加入全局队列
+  for (let i = 0; i < count; i++) {
+    scheduler.queue.push({
+      group,
+      index: i,
+      scheduledTime: startMs + times[i],
+      targetUrl,
+    });
+  }
 
-  return new Promise((resolve) => {
-    function tryStartNext() {
-      // 检查是否全部完成
-      if (nextIndex >= count && running === 0) {
-        group.status = "done";
-        log(`完成: 成功 ${group.success}, 失败 ${group.fail}`);
-        resolve();
-        return;
-      }
+  // 按时间排序
+  scheduler.queue.sort((a, b) => a.scheduledTime - b.scheduledTime);
 
-      // 启动新的访问（不超过并发限制）
-      while (running < MAX_CONCURRENT && nextIndex < count) {
-        const idx = nextIndex++;
-        const scheduledTime = startTime + times[idx];
+  trySchedule();
+}
 
-        // 计算需要等待的时间
-        const waitMs = Math.max(0, scheduledTime - Date.now());
-        running++;
+// ===== 单次访问（也走全局调度器，但立即执行）=====
+function runSingle(targetUrl) {
+  const id = ++groupIdCounter;
+  const group = {
+    id,
+    durationMin: 0,
+    count: 1,
+    total: 0,
+    success: 0,
+    fail: 0,
+    status: "running",
+    results: [null],
+  };
+  state.groups.unshift(group);
 
-        setTimeout(() => {
-          log(`第 ${idx + 1}/${count} 次访问开始`);
-          runOnce({
-            targetUrl,
-            onLog: (msg) => console.log(`[组${groupId} #${idx + 1}] ${msg}`),
-          }).then((result) => {
-            results[idx] = result;
-            group.results[idx] = result;
-            group.total++;
-            state.totalExecuted++;
-            if (result.success) {
-              group.success++;
-              state.totalSuccess++;
-            } else {
-              group.fail++;
-              state.totalFail++;
-            }
-            running--;
-            tryStartNext();
-          });
-        }, waitMs);
-      }
-    }
-
-    group.status = "running";
-    tryStartNext();
+  scheduler.queue.push({
+    group,
+    index: 0,
+    scheduledTime: Date.now(),
+    targetUrl,
   });
+
+  trySchedule();
 }
 
 // ===== HTML 页面 =====
@@ -148,16 +191,21 @@ const HTML = `<!DOCTYPE html>
     <input type="text" id="url" value="__DEFAULT_URL__" placeholder="https://...">
     <div class="form-row">
       <div class="form-item">
-        <label>时间范围（分钟）</label>
-        <input type="number" id="duration" value="5" min="1" max="1440">
+        <label>开始时间</label>
+        <input type="datetime-local" id="startTime" step="60">
+      </div>
+      <div class="form-item">
+        <label>结束时间</label>
+        <input type="datetime-local" id="endTime" step="60">
       </div>
       <div class="form-item">
         <label>访问次数</label>
-        <input type="number" id="count" value="10" min="1" max="100">
+        <input type="number" id="count" value="3" min="1" max="100">
       </div>
     </div>
     <div style="margin-top:8px">
       <button class="btn-run" id="btn-run" onclick="startGroup()">开始一组</button>
+      <button class="btn-run" id="btn-once" onclick="runOnce()" style="background:#1f6feb">单次触发</button>
       <button class="btn-clear" onclick="clearResults()">清空记录</button>
     </div>
   </div>
@@ -186,16 +234,47 @@ const HTML = `<!DOCTYPE html>
 let pollTimer = null;
 let expandedGroups = new Set();
 
+// 设置默认时间（现在到2分钟后）
+function setDefaultTimes() {
+  const now = new Date();
+  const later = new Date(now.getTime() + 2 * 60 * 1000);
+  const fmt = (d) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  };
+  document.getElementById('startTime').value = fmt(now);
+  document.getElementById('endTime').value = fmt(later);
+}
+setDefaultTimes();
+
 function startGroup() {
   const url = document.getElementById('url').value.trim();
-  const duration = parseInt(document.getElementById('duration').value);
+  const startTime = document.getElementById('startTime').value;
+  const endTime = document.getElementById('endTime').value;
   const count = parseInt(document.getElementById('count').value);
-  if (!url || !duration || !count) { alert('请填写所有字段'); return; }
+  if (!url || !startTime || !endTime || !count) { alert('请填写所有字段'); return; }
+
+  const start = new Date(startTime).getTime();
+  const end = new Date(endTime).getTime();
+  if (end <= start) { alert('结束时间必须大于开始时间'); return; }
 
   fetch('/api/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, duration, count })
+    body: JSON.stringify({ url, startTime: start, endTime: end, count })
+  }).then(r => r.json()).then(d => {
+    if (d.error) alert(d.error);
+    startPolling();
+  });
+}
+
+function runOnce() {
+  const url = document.getElementById('url').value.trim();
+  if (!url) { alert('请填写 URL'); return; }
+  fetch('/api/single', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url })
   }).then(r => r.json()).then(d => {
     if (d.error) alert(d.error);
     startPolling();
@@ -220,8 +299,6 @@ function startPolling() {
   pollTimer = setInterval(() => {
     fetch('/api/status').then(r => r.json()).then(d => {
       renderStatus(d);
-      const hasRunning = d.groups.some(g => g.status === 'running');
-      document.getElementById('btn-run').disabled = hasRunning;
     });
   }, 2000);
 }
@@ -247,12 +324,18 @@ function renderStatus(d) {
       : '<span class="badge badge-done">完成</span>';
     const progress = g.total > 0 ? Math.round(g.total / g.count * 100) : 0;
     const expandIcon = expanded ? '<span class="expand-icon">▶</span>' : '<span class="expand-icon">▶</span>';
+    const fmtTime = (ts) => {
+      if (!ts) return '-';
+      const d = new Date(ts);
+      return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+    };
+    const timeRange = fmtTime(g.startTime) + ' ~ ' + fmtTime(g.endTime);
 
     html += '<tr class="group-row' + (expanded ? ' expanded' : '') + '" onclick="toggleGroup(' + g.id + ')">' +
       '<td>' + expandIcon + '</td>' +
       '<td>#' + (i + 1) + '</td>' +
       '<td>' + statusBadge + '</td>' +
-      '<td>' + g.durationMin + ' 分钟</td>' +
+      '<td>' + timeRange + '</td>' +
       '<td>' + g.total + '/' + g.count + '</td>' +
       '<td style="color:#3fb950">' + g.success + '</td>' +
       '<td style="color:#f85149">' + g.fail + '</td>' +
@@ -307,18 +390,19 @@ const server = http.createServer((req, res) => {
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       try {
-        const { url, duration, count } = JSON.parse(body);
+        const { url, startTime, endTime, count } = JSON.parse(body);
         if (url) state.targetUrl = url;
 
         const id = ++groupIdCounter;
         const group = {
           id,
-          durationMin: duration,
+          startTime,
+          endTime,
           count,
           total: 0,
           success: 0,
           fail: 0,
-          status: "pending",
+          status: "running",
           results: new Array(count).fill(null),
         };
         state.groups.unshift(group);
@@ -326,7 +410,26 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, groupId: id }));
 
-        runGroup(id, state.targetUrl, duration, count);
+        runGroup(id, state.targetUrl, startTime, endTime, count);
+      } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // 单次触发
+  if (req.method === "POST" && req.url === "/api/single") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const { url } = JSON.parse(body);
+        if (url) state.targetUrl = url;
+        runSingle(state.targetUrl);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
       } catch (e) {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
@@ -352,7 +455,8 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({
       groups: state.groups.map(g => ({
         id: g.id,
-        durationMin: g.durationMin,
+        startTime: g.startTime,
+        endTime: g.endTime,
         count: g.count,
         total: g.total,
         success: g.success,
