@@ -116,12 +116,13 @@ function runGroup(groupId, targetUrl, startMs, endMs, count) {
   trySchedule();
 }
 
-// ===== 单次访问（也走全局调度器，但立即执行）=====
+// ===== 单次访问（立即执行，不走调度器）=====
 function runSingle(targetUrl) {
   const id = ++groupIdCounter;
   const group = {
     id,
-    durationMin: 0,
+    startTime: Date.now(),
+    endTime: Date.now(),
     count: 1,
     total: 0,
     success: 0,
@@ -131,14 +132,24 @@ function runSingle(targetUrl) {
   };
   state.groups.unshift(group);
 
-  scheduler.queue.push({
-    group,
-    index: 0,
-    scheduledTime: Date.now(),
+  console.log(`[组${id} #1] 单次触发开始`);
+  runOnce({
     targetUrl,
+    onLog: (msg) => console.log(`[组${id} #1] ${msg}`),
+  }).then((result) => {
+    group.results[0] = result;
+    group.total = 1;
+    state.totalExecuted++;
+    if (result.success) {
+      group.success = 1;
+      state.totalSuccess++;
+    } else {
+      group.fail = 1;
+      state.totalFail++;
+    }
+    group.status = "done";
+    console.log(`[组${id}] 完成: ${result.success ? '成功' : '失败'}`);
   });
-
-  trySchedule();
 }
 
 // ===== HTML 页面 =====
