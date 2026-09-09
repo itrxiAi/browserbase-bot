@@ -80,9 +80,20 @@ function runGroup(groupId, targetUrl, startMs, endMs, count) {
   const log = (msg) => console.log(`[组${groupId}] ${msg}`);
   const durationMs = endMs - startMs;
 
-  // 在 startMs ~ endMs 内随机分布 count 次访问
+  // 在 startMs ~ endMs 内按泊松分布生成 count 个时间点
+  // 泊松过程：间隔服从指数分布，λ = count / durationSec
+  const lambda = count / durationMs; // 每毫秒平均事件数
   const times = [];
-  for (let i = 0; i < count; i++) {
+  let t = 0;
+  while (times.length < count && t < durationMs) {
+    // 指数分布的间隔：-ln(U) / lambda
+    const u = Math.random();
+    const interval = -Math.log(u) / lambda;
+    t += interval;
+    if (t < durationMs) times.push(t);
+  }
+  // 如果不够 count 个（泊松分布随机性导致），补齐到 count
+  while (times.length < count) {
     times.push(Math.random() * durationMs);
   }
   times.sort((a, b) => a - b);
@@ -257,6 +268,10 @@ function startGroup() {
   const start = new Date(startTime).getTime();
   const end = new Date(endTime).getTime();
   if (end <= start) { alert('结束时间必须大于开始时间'); return; }
+
+  const durationSec = (end - start) / 1000;
+  const avgInterval = durationSec / count;
+  if (avgInterval < 30) { alert('平均频率不能超过 30s/次，当前 ' + avgInterval.toFixed(1) + 's/次。请增大时间范围或减少次数。'); return; }
 
   fetch('/api/start', {
     method: 'POST',
