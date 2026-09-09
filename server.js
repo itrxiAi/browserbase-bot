@@ -3,16 +3,89 @@ require("dotenv").config();
 const { runOnce, USE_APIFY, USE_BROWSERBASE } = require("./bot");
 
 const PORT = process.env.PORT || 3100;
+const MAX_CONCURRENT = 2;
 
 // ===== 全局状态 =====
 const state = {
-  running: false,
-  results: [],
+  groups: [],       // [{ id, durationMin, total, success, fail, status, results: [] }]
   totalExecuted: 0,
   totalSuccess: 0,
   totalFail: 0,
   targetUrl: "https://cnhzbingxing.en.alibaba.com/company_profile.html",
 };
+
+let groupIdCounter = 0;
+
+// ===== 调度一组访问 =====
+async function runGroup(groupId, targetUrl, durationMin, count) {
+  const group = state.groups.find(g => g.id === groupId);
+  if (!group) return;
+
+  const log = (msg) => console.log(`[组${groupId}] ${msg}`);
+  const durationMs = durationMin * 60 * 1000;
+  const startTime = Date.now();
+
+  // 在 durationMs 内随机分布 count 次访问
+  const times = [];
+  for (let i = 0; i < count; i++) {
+    times.push(Math.random() * durationMs);
+  }
+  times.sort((a, b) => a - b);
+
+  log(`开始: ${count} 次访问, 时间范围 ${durationMin} 分钟, 最多 ${MAX_CONCURRENT} 并发`);
+
+  // 用 Promise 管理并发
+  let running = 0;
+  let nextIndex = 0;
+  const results = new Array(count);
+
+  return new Promise((resolve) => {
+    function tryStartNext() {
+      // 检查是否全部完成
+      if (nextIndex >= count && running === 0) {
+        group.status = "done";
+        log(`完成: 成功 ${group.success}, 失败 ${group.fail}`);
+        resolve();
+        return;
+      }
+
+      // 启动新的访问（不超过并发限制）
+      while (running < MAX_CONCURRENT && nextIndex < count) {
+        const idx = nextIndex++;
+        const scheduledTime = startTime + times[idx];
+
+        // 计算需要等待的时间
+        const waitMs = Math.max(0, scheduledTime - Date.now());
+        running++;
+
+        setTimeout(() => {
+          log(`第 ${idx + 1}/${count} 次访问开始`);
+          runOnce({
+            targetUrl,
+            onLog: (msg) => console.log(`[组${groupId} #${idx + 1}] ${msg}`),
+          }).then((result) => {
+            results[idx] = result;
+            group.results[idx] = result;
+            group.total++;
+            state.totalExecuted++;
+            if (result.success) {
+              group.success++;
+              state.totalSuccess++;
+            } else {
+              group.fail++;
+              state.totalFail++;
+            }
+            running--;
+            tryStartNext();
+          });
+        }, waitMs);
+      }
+    }
+
+    group.status = "running";
+    tryStartNext();
+  });
+}
 
 // ===== HTML 页面 =====
 const HTML = `<!DOCTYPE html>
@@ -27,7 +100,11 @@ const HTML = `<!DOCTYPE html>
   h1 { font-size: 22px; margin-bottom: 20px; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
   label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 6px; }
-  input[type=text] { width: 100%; padding: 10px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e1e4e8; font-size: 14px; margin-bottom: 16px; }
+  input[type=text], input[type=number] { padding: 10px 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e1e4e8; font-size: 14px; }
+  input[type=text] { width: 100%; margin-bottom: 16px; }
+  .form-row { display: flex; gap: 16px; margin-bottom: 16px; }
+  .form-row .form-item { flex: 1; }
+  .form-row input { width: 100%; }
   input:focus { outline: none; border-color: #58a6ff; }
   button { padding: 10px 20px; border: none; border-radius: 6px; color: #fff; font-size: 14px; cursor: pointer; }
   .btn-run { background: #238636; }
@@ -35,7 +112,7 @@ const HTML = `<!DOCTYPE html>
   .btn-clear { background: #6e7681; }
   .btn-clear:hover { background: #8b949e; }
   button:disabled { background: #21262d; color: #6e7681; cursor: not-allowed; }
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
   .stat { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 14px; text-align: center; }
   .stat-num { font-size: 28px; font-weight: 700; }
   .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; }
@@ -50,7 +127,17 @@ const HTML = `<!DOCTYPE html>
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
   .badge-ok { background: #238636; color: #fff; }
   .badge-fail { background: #da3633; color: #fff; }
+  .badge-running { background: #1f6feb; color: #fff; }
+  .badge-done { background: #30363d; color: #8b949e; }
   .empty { text-align: center; color: #6e7681; padding: 40px; }
+  .group-row { cursor: pointer; }
+  .group-row:hover { background: #161b22; }
+  .group-detail { background: #0d1117; }
+  .group-detail td { padding-left: 32px; color: #8b949e; }
+  .expand-icon { display: inline-block; width: 16px; transition: transform 0.2s; }
+  .expanded .expand-icon { transform: rotate(90deg); }
+  .progress-bar { display: inline-block; width: 80px; height: 6px; background: #21262d; border-radius: 3px; vertical-align: middle; margin-left: 8px; }
+  .progress-fill { height: 100%; background: #3fb950; border-radius: 3px; transition: width 0.3s; }
 </style>
 </head>
 <body>
@@ -59,15 +146,25 @@ const HTML = `<!DOCTYPE html>
   <div class="card">
     <label>目标 URL</label>
     <input type="text" id="url" value="__DEFAULT_URL__" placeholder="https://...">
+    <div class="form-row">
+      <div class="form-item">
+        <label>时间范围（分钟）</label>
+        <input type="number" id="duration" value="5" min="1" max="1440">
+      </div>
+      <div class="form-item">
+        <label>访问次数</label>
+        <input type="number" id="count" value="10" min="1" max="100">
+      </div>
+    </div>
     <div style="margin-top:8px">
-      <button class="btn-run" id="btn-run" onclick="runOnce()">执行一次</button>
+      <button class="btn-run" id="btn-run" onclick="startGroup()">开始一组</button>
       <button class="btn-clear" onclick="clearResults()">清空记录</button>
     </div>
   </div>
 
   <div class="card">
     <div class="stats">
-      <div class="stat stat-running"><div class="stat-num" id="s-running">0</div><div class="stat-label">进行中</div></div>
+      <div class="stat stat-running"><div class="stat-num" id="s-running">0</div><div class="stat-label">进行中组数</div></div>
       <div class="stat stat-total"><div class="stat-num" id="s-total">0</div><div class="stat-label">总执行</div></div>
       <div class="stat stat-success"><div class="stat-num" id="s-success">0</div><div class="stat-label">成功</div></div>
       <div class="stat stat-fail"><div class="stat-num" id="s-fail">0</div><div class="stat-label">失败</div></div>
@@ -77,24 +174,28 @@ const HTML = `<!DOCTYPE html>
   <div class="card">
     <table>
       <thead>
-        <tr><th>#</th><th>状态</th><th>标题</th><th>耗时</th><th>错误</th></tr>
+        <tr><th></th><th>组</th><th>状态</th><th>时间范围</th><th>总数</th><th>成功</th><th>失败</th><th>进度</th></tr>
       </thead>
-      <tbody id="results">
-        <tr><td colspan="5" class="empty">尚无记录</td></tr>
+      <tbody id="groups">
+        <tr><td colspan="8" class="empty">尚无记录</td></tr>
       </tbody>
     </table>
   </div>
 
 <script>
 let pollTimer = null;
+let expandedGroups = new Set();
 
-function runOnce() {
+function startGroup() {
   const url = document.getElementById('url').value.trim();
-  document.getElementById('btn-run').disabled = true;
-  fetch('/api/run', {
+  const duration = parseInt(document.getElementById('duration').value);
+  const count = parseInt(document.getElementById('count').value);
+  if (!url || !duration || !count) { alert('请填写所有字段'); return; }
+
+  fetch('/api/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url })
+    body: JSON.stringify({ url, duration, count })
   }).then(r => r.json()).then(d => {
     if (d.error) alert(d.error);
     startPolling();
@@ -102,7 +203,16 @@ function runOnce() {
 }
 
 function clearResults() {
-  fetch('/api/clear', { method: 'POST' }).then(() => renderStatus({ results: [], totalExecuted: 0, totalSuccess: 0, totalFail: 0, running: false }));
+  fetch('/api/clear', { method: 'POST' }).then(() => {
+    expandedGroups.clear();
+    renderStatus({ groups: [], totalExecuted: 0, totalSuccess: 0, totalFail: 0 });
+  });
+}
+
+function toggleGroup(id) {
+  if (expandedGroups.has(id)) expandedGroups.delete(id);
+  else expandedGroups.add(id);
+  fetch('/api/status').then(r => r.json()).then(renderStatus);
 }
 
 function startPolling() {
@@ -110,32 +220,68 @@ function startPolling() {
   pollTimer = setInterval(() => {
     fetch('/api/status').then(r => r.json()).then(d => {
       renderStatus(d);
-      document.getElementById('btn-run').disabled = d.running;
+      const hasRunning = d.groups.some(g => g.status === 'running');
+      document.getElementById('btn-run').disabled = hasRunning;
     });
   }, 2000);
 }
 
 function renderStatus(d) {
-  document.getElementById('s-running').textContent = d.running ? 1 : 0;
   document.getElementById('s-total').textContent = d.totalExecuted;
   document.getElementById('s-success').textContent = d.totalSuccess;
   document.getElementById('s-fail').textContent = d.totalFail;
+  const running = d.groups.filter(g => g.status === 'running').length;
+  document.getElementById('s-running').textContent = running;
 
-  const tbody = document.getElementById('results');
-  if (!d.results || d.results.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">尚无记录</td></tr>';
+  const tbody = document.getElementById('groups');
+  if (!d.groups || d.groups.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">尚无记录</td></tr>';
     return;
   }
-  tbody.innerHTML = d.results.map((r, i) => {
-    const badge = r.success ? '<span class="badge badge-ok">成功</span>' : '<span class="badge badge-fail">失败</span>';
-    return '<tr>' +
-      '<td>' + (i+1) + '</td>' +
-      '<td>' + badge + '</td>' +
-      '<td>' + (r.title || '-') + '</td>' +
-      '<td>' + (r.duration || 0) + 's</td>' +
-      '<td>' + (r.error || '') + '</td>' +
+
+  let html = '';
+  d.groups.forEach((g, i) => {
+    const expanded = expandedGroups.has(g.id);
+    const statusBadge = g.status === 'running'
+      ? '<span class="badge badge-running">进行中</span>'
+      : '<span class="badge badge-done">完成</span>';
+    const progress = g.total > 0 ? Math.round(g.total / g.count * 100) : 0;
+    const expandIcon = expanded ? '<span class="expand-icon">▶</span>' : '<span class="expand-icon">▶</span>';
+
+    html += '<tr class="group-row' + (expanded ? ' expanded' : '') + '" onclick="toggleGroup(' + g.id + ')">' +
+      '<td>' + expandIcon + '</td>' +
+      '<td>#' + (i + 1) + '</td>' +
+      '<td>' + statusBadge + '</td>' +
+      '<td>' + g.durationMin + ' 分钟</td>' +
+      '<td>' + g.total + '/' + g.count + '</td>' +
+      '<td style="color:#3fb950">' + g.success + '</td>' +
+      '<td style="color:#f85149">' + g.fail + '</td>' +
+      '<td>' + progress + '%<span class="progress-bar"><span class="progress-fill" style="width:' + progress + '%"></span></span></td>' +
     '</tr>';
-  }).join('');
+
+    if (expanded) {
+      if (g.results.length === 0) {
+        html += '<tr class="group-detail"><td colspan="8">暂无结果</td></tr>';
+      } else {
+        g.results.forEach((r, j) => {
+          if (!r) {
+            html += '<tr class="group-detail"><td colspan="8">#' + (j+1) + ' 等待中...</td></tr>';
+          } else {
+            const badge = r.success ? '<span class="badge badge-ok">成功</span>' : '<span class="badge badge-fail">失败</span>';
+            html += '<tr class="group-detail">' +
+              '<td></td>' +
+              '<td>#' + (j+1) + '</td>' +
+              '<td>' + badge + '</td>' +
+              '<td colspan="2">' + (r.title || '-') + '</td>' +
+              '<td>' + (r.duration || 0) + 's</td>' +
+              '<td colspan="2">' + (r.error || '') + '</td>' +
+            '</tr>';
+          }
+        });
+      }
+    }
+  });
+  tbody.innerHTML = html;
 }
 
 startPolling();
@@ -155,36 +301,33 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 执行一次
-  if (req.method === "POST" && req.url === "/api/run") {
+  // 开始一组
+  if (req.method === "POST" && req.url === "/api/start") {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", () => {
       try {
-        if (state.running) {
-          res.writeHead(409, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "正在执行中，请等待完成" }));
-          return;
-        }
-        const { url } = JSON.parse(body);
+        const { url, duration, count } = JSON.parse(body);
         if (url) state.targetUrl = url;
-        state.running = true;
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true }));
 
-        runOnce({
-          targetUrl: state.targetUrl,
-          onLog: (msg) => console.log(msg),
-        }).then((result) => {
-          state.running = false;
-          state.totalExecuted++;
-          if (result.success) state.totalSuccess++;
-          else state.totalFail++;
-          state.results.unshift(result);
-          if (state.results.length > 100) state.results.pop();
-        });
+        const id = ++groupIdCounter;
+        const group = {
+          id,
+          durationMin: duration,
+          count,
+          total: 0,
+          success: 0,
+          fail: 0,
+          status: "pending",
+          results: new Array(count).fill(null),
+        };
+        state.groups.unshift(group);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, groupId: id }));
+
+        runGroup(id, state.targetUrl, duration, count);
       } catch (e) {
-        state.running = false;
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
       }
@@ -194,7 +337,7 @@ const server = http.createServer((req, res) => {
 
   // 清空记录
   if (req.method === "POST" && req.url === "/api/clear") {
-    state.results = [];
+    state.groups = [];
     state.totalExecuted = 0;
     state.totalSuccess = 0;
     state.totalFail = 0;
@@ -207,11 +350,19 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/api/status") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
-      running: state.running,
+      groups: state.groups.map(g => ({
+        id: g.id,
+        durationMin: g.durationMin,
+        count: g.count,
+        total: g.total,
+        success: g.success,
+        fail: g.fail,
+        status: g.status,
+        results: g.results,
+      })),
       totalExecuted: state.totalExecuted,
       totalSuccess: state.totalSuccess,
       totalFail: state.totalFail,
-      results: state.results,
     }));
     return;
   }
@@ -223,5 +374,6 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(`\n  流量生成器已启动: http://localhost:${PORT}`);
   const mode = USE_APIFY ? "Apify" : (USE_BROWSERBASE ? "Browserbase" : "本地浏览器");
-  console.log(`  模式: ${mode}\n`);
+  console.log(`  模式: ${mode}`);
+  console.log(`  最大并发: ${MAX_CONCURRENT}\n`);
 });

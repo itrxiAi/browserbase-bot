@@ -119,7 +119,6 @@ async function runOnce(options) {
 
         const result = items[0];
         log(`标题: ${result.title}, CAPTCHA: ${result.hasCaptcha}`);
-        log(`完整 HTML:\n${result.html || ''}`);
 
         if (result.hasCaptcha) {
           log(`命中 CAPTCHA`);
